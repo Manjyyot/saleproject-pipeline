@@ -17,11 +17,12 @@ pipeline {
         stage('Locate Docker Compose Directory') {
             steps {
                 script {
-                    composeDir = sh(
+                    def composeDir = sh(
                         script: 'find . -name "docker-compose.yml" | head -n 1 | xargs dirname',
                         returnStdout: true
                     ).trim()
                     echo "Docker Compose files located in: ${composeDir}"
+                    env.COMPOSE_DIR = composeDir
                 }
             }
         }
@@ -43,12 +44,11 @@ pipeline {
 
         stage('Build and Tag Docker Images') {
             steps {
-                dir(composeDir) {
+                dir(env.COMPOSE_DIR) {
                     sh '''
                         docker-compose build
                         docker images
 
-                        # Tag the images to ECR format
                         docker tag saleproject_frontend $ECR_REPO:frontend-latest
                         docker tag saleproject_backend $ECR_REPO:backend-latest
                     '''
@@ -58,7 +58,7 @@ pipeline {
 
         stage('Local Testing') {
             steps {
-                dir(composeDir) {
+                dir(env.COMPOSE_DIR) {
                     sh '''
                         docker-compose up -d
                         sleep 10
@@ -80,7 +80,7 @@ pipeline {
 
         stage('Cleanup Docker Compose') {
             steps {
-                dir(composeDir) {
+                dir(env.COMPOSE_DIR) {
                     sh 'docker-compose down'
                 }
             }
