@@ -16,12 +16,11 @@ pipeline {
         stage('Locate Docker Compose Directory') {
             steps {
                 script {
-                    def composeDir = sh(
+                    composeDir = sh(
                         script: 'find . -name docker-compose.yml | head -n 1 | xargs dirname',
                         returnStdout: true
                     ).trim()
                     echo "Docker Compose files located in: ${composeDir}"
-                    env.COMPOSE_DIR = composeDir
                 }
             }
         }
@@ -32,30 +31,51 @@ pipeline {
                     $class: 'AmazonWebServicesCredentialsBinding',
                     credentialsId: 'aws-credentials'
                 ]]) {
-                    sh '''
-                        echo "Logging in to AWS ECR..."
-                        aws --version
-                        aws ecr get-login-password --region $AWS_REGION | \
-                        docker login --username AWS --password-stdin $ECR_REGISTRY
-                    '''
+                    dir("${composeDir}") {
+                        withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
+                            sh '''
+                                echo Logging in to AWS ECR...
+                                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                            '''
+                        }
+                    }
                 }
             }
         }
 
-        stage('Build and Push Docker Images') {
+        stage('Build Docker Images') {
             steps {
-                dir("${env.COMPOSE_DIR}") {
-                    sh '''
-                        echo "Building and tagging images..."
-                        docker compose build
+                dir("${composeDir}") {
+                    sh 'docker compose build'
+                }
+            }
+        }
 
-                        echo "Tagging and pushing each image to ECR..."
-                        for SERVICE in $(docker compose config --services); do
-                            IMAGE_NAME="${ECR_REGISTRY}/${SERVICE}:latest"
-                            docker tag ${SERVICE}:latest $IMAGE_NAME
-                            docker push $IMAGE_NAME
-                        done
-                    '''
+        stage('Tag and Push Images to ECR') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-credentials'
+                ]]) {
+                    dir("${composeDir}") {
+                        withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
+                            sh '''
+                                echo Tagging and pushing each image to ECR...
+
+                                for SERVICE in $(docker compose config --services); do
+                                    IMAGE=$(docker compose config | awk "/${SERVICE}:/{flag=1; next} /image:/{if(flag){print \$2; flag=0}}" | head -n1)
+                                    if [ -z "$IMAGE" ]; then
+                                        IMAGE="${SERVICE}:latest"
+                                    fi
+
+                                    ECR_IMAGE="${ECR_REGISTRY}/${SERVICE}:latest"
+                                    echo "Tagging $IMAGE as $ECR_IMAGE"
+                                    docker tag "$IMAGE" "$ECR_IMAGE" || echo "Image $IMAGE not found, skipping..."
+                                    docker push "$ECR_IMAGE" || echo "Failed to push $ECR_IMAGE"
+                                done
+                            '''
+                        }
+                    }
                 }
             }
         }
@@ -63,8 +83,7 @@ pipeline {
         stage('Cleanup Local Docker Images') {
             steps {
                 sh '''
-                    echo "Cleaning up local Docker images..."
-                    docker image prune -af
+                    docker image prune -a -f
                 '''
             }
         }
