@@ -3,8 +3,7 @@ pipeline {
 
     environment {
         AWS_REGION = 'us-east-1'
-        ECR_REPO = '975050024946.dkr.ecr.us-east-1.amazonaws.com/saleprojects'
-        COMPOSE_PROJECT_NAME = 'saleproject'
+        ECR_REGISTRY = '975050024946.dkr.ecr.us-east-1.amazonaws.com'
     }
 
     stages {
@@ -18,7 +17,7 @@ pipeline {
             steps {
                 script {
                     def composeDir = sh(
-                        script: 'find . -name "docker-compose.yml" | head -n 1 | xargs dirname',
+                        script: 'find . -name docker-compose.yml | head -n 1 | xargs dirname',
                         returnStdout: true
                     ).trim()
                     echo "Docker Compose files located in: ${composeDir}"
@@ -31,69 +30,52 @@ pipeline {
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-jenkins-creds'
+                    credentialsId: 'aws-credentials'
                 ]]) {
                     sh '''
+                        echo "Logging in to AWS ECR..."
                         aws --version
                         aws ecr get-login-password --region $AWS_REGION | \
-                        docker login --username AWS --password-stdin $ECR_REPO
+                        docker login --username AWS --password-stdin $ECR_REGISTRY
                     '''
                 }
             }
         }
 
-        stage('Build and Tag Docker Images') {
+        stage('Build and Push Docker Images') {
             steps {
-                dir(env.COMPOSE_DIR) {
+                dir("${env.COMPOSE_DIR}") {
                     sh '''
-                        docker-compose build
-                        docker images
+                        echo "Building and tagging images..."
+                        docker compose build
 
-                        docker tag saleproject_frontend $ECR_REPO:frontend-latest
-                        docker tag saleproject_backend $ECR_REPO:backend-latest
+                        echo "Tagging and pushing each image to ECR..."
+                        for SERVICE in $(docker compose config --services); do
+                            IMAGE_NAME="${ECR_REGISTRY}/${SERVICE}:latest"
+                            docker tag ${SERVICE}:latest $IMAGE_NAME
+                            docker push $IMAGE_NAME
+                        done
                     '''
                 }
             }
         }
 
-        stage('Local Testing') {
-            steps {
-                dir(env.COMPOSE_DIR) {
-                    sh '''
-                        docker-compose up -d
-                        sleep 10
-                        docker ps
-                        docker-compose ps
-                    '''
-                }
-            }
-        }
-
-        stage('Push to ECR') {
+        stage('Cleanup Local Docker Images') {
             steps {
                 sh '''
-                    docker push $ECR_REPO:frontend-latest
-                    docker push $ECR_REPO:backend-latest
+                    echo "Cleaning up local Docker images..."
+                    docker image prune -af
                 '''
-            }
-        }
-
-        stage('Cleanup Docker Compose') {
-            steps {
-                dir(env.COMPOSE_DIR) {
-                    sh 'docker-compose down'
-                }
             }
         }
     }
 
     post {
         failure {
-            echo 'Pipeline failed. Check logs.'
+            echo 'Pipeline failed. Check the logs for more information.'
         }
         cleanup {
             cleanWs()
-            sh 'docker system prune -f'
         }
     }
 }
