@@ -4,7 +4,7 @@ pipeline {
     environment {
         AWS_REGION = 'us-east-1'
         ECR_REGISTRY = '975050024946.dkr.ecr.us-east-1.amazonaws.com'
-        ECR_REPO_PREFIX = 'saleprojects'  // As per ECR screenshot
+        ECR_REPO_PREFIX = 'saleprojects'
     }
 
     stages {
@@ -55,18 +55,26 @@ pipeline {
         stage('Tag and Push Images to ECR') {
             steps {
                 script {
-                    def services = sh(script: "docker compose config --services", returnStdout: true).trim().split("\n")
-                    for (svc in services) {
-                        def localTag = "${svc}:latest"
-                        def ecrTag = "${ECR_REGISTRY}/${ECR_REPO_PREFIX}/${svc}:latest"
-                        echo "Attempting to tag and push ${localTag} as ${ecrTag}"
+                    // Map actual built image names to target ECR repo names
+                    def imageMap = [
+                        "salespipeline-careerpath"     : "careerpath",
+                        "salespipeline-frontend"       : "frontend",
+                        "bitnami/mongodb-exporter"     : "mongodb-exporter",
+                        "prom/prometheus"              : "prometheus"
+                    ]
 
-                        def imageExists = sh(script: "docker images -q ${localTag}", returnStdout: true).trim()
-                        if (imageExists) {
-                            sh "docker tag ${localTag} ${ecrTag}"
-                            sh "docker push ${ecrTag}"
+                    for (builtName in imageMap.keySet()) {
+                        def ecrName = imageMap[builtName]
+                        def fullEcrTag = "${ECR_REGISTRY}/${ECR_REPO_PREFIX}/${ecrName}:latest"
+
+                        echo "➡️ Checking image: ${builtName}:latest"
+
+                        def exists = sh(script: "docker images -q ${builtName}:latest", returnStdout: true).trim()
+                        if (exists) {
+                            sh "docker tag ${builtName}:latest ${fullEcrTag}"
+                            sh "docker push ${fullEcrTag}"
                         } else {
-                            echo "⚠️ Skipping ${localTag} — image not found locally."
+                            echo "⚠️ Image ${builtName}:latest not found, skipping push."
                         }
                     }
                 }
@@ -81,11 +89,9 @@ pipeline {
     }
 
     post {
-        failure {
-            echo 'Pipeline failed. Check logs.'
-        }
-        success {
-            echo 'All Docker images built and pushed to ECR successfully.'
+        always {
+            echo "Pipeline completed."
+            cleanWs()
         }
     }
 }
