@@ -4,7 +4,7 @@ pipeline {
     environment {
         AWS_REGION = 'us-east-1'
         ECR_REGISTRY = '975050024946.dkr.ecr.us-east-1.amazonaws.com'
-        ECR_REPO_PREFIX = 'saleprojects'
+        ECR_REPO = 'saleprojects'
     }
 
     stages {
@@ -21,7 +21,7 @@ pipeline {
                         script: 'find . -name docker-compose.yml | head -n 1 | xargs dirname',
                         returnStdout: true
                     ).trim()
-                    echo "Docker Compose files located in: ${composeDir}"
+                    echo "Docker Compose directory: ${composeDir}"
                 }
             }
         }
@@ -55,26 +55,31 @@ pipeline {
         stage('Tag and Push Images to ECR') {
             steps {
                 script {
-                    // Map actual built image names to target ECR repo names
-                    def imageMap = [
-                        "salespipeline-careerpath"     : "careerpath",
-                        "salespipeline-frontend"       : "frontend",
-                        "bitnami/mongodb-exporter"     : "mongodb-exporter",
-                        "prom/prometheus"              : "prometheus"
+                    def images = [
+                        "prometheus",
+                        "grafana",
+                        "mongodb_exporter",
+                        "careerpath",
+                        "frontend"
                     ]
 
-                    for (builtName in imageMap.keySet()) {
-                        def ecrName = imageMap[builtName]
-                        def fullEcrTag = "${ECR_REGISTRY}/${ECR_REPO_PREFIX}/${ecrName}:latest"
+                    for (image in images) {
+                        def localTag = "salespipeline-${image}:latest"
+                        def ecrTag = "${ECR_REGISTRY}/${ECR_REPO}:${image}"
 
-                        echo "➡️ Checking image: ${builtName}:latest"
+                        def imageExists = sh(
+                            script: "docker images -q ${localTag}",
+                            returnStdout: true
+                        ).trim()
 
-                        def exists = sh(script: "docker images -q ${builtName}:latest", returnStdout: true).trim()
-                        if (exists) {
-                            sh "docker tag ${builtName}:latest ${fullEcrTag}"
-                            sh "docker push ${fullEcrTag}"
+                        if (imageExists) {
+                            echo "📦 Pushing ${localTag} to ${ecrTag}"
+                            sh """
+                                docker tag ${localTag} ${ecrTag}
+                                docker push ${ecrTag}
+                            """
                         } else {
-                            echo "⚠️ Image ${builtName}:latest not found, skipping push."
+                            echo "⚠️ Skipping ${localTag} — image not found locally."
                         }
                     }
                 }
@@ -90,8 +95,14 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline completed."
+            echo '🧹 Cleaning workspace...'
             cleanWs()
+        }
+        success {
+            echo '✅ All Docker images built and pushed to ECR successfully.'
+        }
+        failure {
+            echo '❌ Pipeline failed. Check logs for details.'
         }
     }
 }
