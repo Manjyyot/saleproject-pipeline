@@ -2,92 +2,76 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION      = 'us-east-1'
-        AWS_ACCOUNT_ID  = '975050024946'
-        ECR_REPOSITORY  = 'saleprojects'
-        IMAGE_TAG       = "${env.BUILD_NUMBER}"
-        ECR_REGISTRY    = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-        IMAGE_URI       = "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-        CONTAINER_NAME  = "saleproject-test"
+        AWS_REGION = 'us-east-1'
+        ECR_REPO = '975050024946.dkr.ecr.us-east-1.amazonaws.com/saleprojects'
+        COMPOSE_PROJECT_NAME = 'saleproject'
     }
 
     stages {
-        stage('Checkout') {
+        stage('Checkout Source') {
             steps {
-                git url: 'https://github.com/Manjyyot/SaleProject.git', branch: 'main'
+                git 'https://github.com/Manjyyot/SaleProject.git'
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Login to AWS ECR') {
             steps {
-                script {
-                    docker.build("${ECR_REPOSITORY}:${IMAGE_TAG}")
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-credentials'
+                ]]) {
+                    sh '''
+                        aws --version
+                        aws ecr get-login-password --region $AWS_REGION | \
+                        docker login --username AWS --password-stdin $ECR_REPO
+                    '''
                 }
             }
         }
 
-        stage('Local Container Test') {
+        stage('Build and Tag Docker Images') {
             steps {
-                script {
-                    // Run container in detached mode
-                    sh """
-                        docker run -d --rm --name ${CONTAINER_NAME} -p 8080:8080 ${ECR_REPOSITORY}:${IMAGE_TAG}
-                        sleep 10
-                        docker ps
-                        docker logs ${CONTAINER_NAME}
-                    """
-                }
+                sh '''
+                    docker-compose build
+                    docker images
+
+                    # Tag built images
+                    docker tag saleproject_frontend $ECR_REPO:frontend-latest
+                    docker tag saleproject_backend $ECR_REPO:backend-latest
+                '''
             }
         }
 
-        stage('Validate Container Health') {
+        stage('Local Testing') {
             steps {
-                script {
-                    def containerStatus = sh(script: "docker inspect -f '{{.State.Running}}' ${CONTAINER_NAME}", returnStdout: true).trim()
-                    if (containerStatus != "true") {
-                        error "Container did not start correctly. Aborting."
-                    }
-                }
+                sh '''
+                    docker-compose up -d
+                    sleep 10
+                    docker ps
+                    docker-compose ps
+                '''
             }
         }
 
-        stage('Stop Test Container') {
+        stage('Push to ECR') {
             steps {
-                sh "docker stop ${CONTAINER_NAME} || true"
+                sh '''
+                    docker push $ECR_REPO:frontend-latest
+                    docker push $ECR_REPO:backend-latest
+                '''
             }
         }
 
-        stage('Authenticate to AWS ECR') {
+        stage('Cleanup') {
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-                    sh """
-                        aws ecr get-login-password --region ${AWS_REGION} | \
-                        docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                    """
-                }
-            }
-        }
-
-        stage('Tag and Push to ECR') {
-            steps {
-                sh """
-                    docker tag ${ECR_REPOSITORY}:${IMAGE_TAG} ${IMAGE_URI}
-                    docker push ${IMAGE_URI}
-                """
+                sh 'docker-compose down'
             }
         }
     }
 
     post {
         always {
-            sh 'docker container prune -f'
-            sh 'docker image prune -af'
-        }
-        success {
-            echo "✅ Image ${IMAGE_URI} built and pushed to ECR successfully."
-        }
-        failure {
-            echo "❌ Build failed. Check logs."
+            sh 'docker system prune -f'
         }
     }
 }
