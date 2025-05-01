@@ -8,9 +8,21 @@ pipeline {
     }
 
     stages {
-        stage('Checkout Source') {
+        stage('Clone Repo') {
             steps {
-                git 'https://github.com/Manjyyot/SaleProject.git'
+                git branch: 'main', url: 'https://github.com/Manjyyot/SaleProject.git'
+            }
+        }
+
+        stage('Locate Docker Compose Directory') {
+            steps {
+                script {
+                    composeDir = sh(
+                        script: 'find . -name "docker-compose.yml" | head -n 1 | xargs dirname',
+                        returnStdout: true
+                    ).trim()
+                    echo "Docker Compose files located in: ${composeDir}"
+                }
             }
         }
 
@@ -18,7 +30,7 @@ pipeline {
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-credentials'
+                    credentialsId: 'aws-jenkins-creds'
                 ]]) {
                     sh '''
                         aws --version
@@ -31,25 +43,29 @@ pipeline {
 
         stage('Build and Tag Docker Images') {
             steps {
-                sh '''
-                    docker-compose build
-                    docker images
+                dir(composeDir) {
+                    sh '''
+                        docker-compose build
+                        docker images
 
-                    # Tag built images
-                    docker tag saleproject_frontend $ECR_REPO:frontend-latest
-                    docker tag saleproject_backend $ECR_REPO:backend-latest
-                '''
+                        # Tag the images to ECR format
+                        docker tag saleproject_frontend $ECR_REPO:frontend-latest
+                        docker tag saleproject_backend $ECR_REPO:backend-latest
+                    '''
+                }
             }
         }
 
         stage('Local Testing') {
             steps {
-                sh '''
-                    docker-compose up -d
-                    sleep 10
-                    docker ps
-                    docker-compose ps
-                '''
+                dir(composeDir) {
+                    sh '''
+                        docker-compose up -d
+                        sleep 10
+                        docker ps
+                        docker-compose ps
+                    '''
+                }
             }
         }
 
@@ -62,15 +78,21 @@ pipeline {
             }
         }
 
-        stage('Cleanup') {
+        stage('Cleanup Docker Compose') {
             steps {
-                sh 'docker-compose down'
+                dir(composeDir) {
+                    sh 'docker-compose down'
+                }
             }
         }
     }
 
     post {
-        always {
+        failure {
+            echo 'Pipeline failed. Check logs.'
+        }
+        cleanup {
+            cleanWs()
             sh 'docker system prune -f'
         }
     }
